@@ -1,0 +1,228 @@
+---
+title: "TrueAbsencesInSDMS_Tutorial"
+author: "Camille Mellin"
+date: "30/11/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(tidyr)
+library(sp)
+```
+
+# Selecting true absences for SDM calibration
+
+This is a tutorial for selecting true absences in SDMs. We first upload the data (species presences at specific sites and survey dates) and generate true absences based on different assumptions:
+
+(1) Add zeros for all species in the data matrix when not recorded at a site.
+(2) Add zeros for species recorded at each individual site on at least one occasion
+(3) Add zeros for species that occur within a convex hull that encompasses the site (i.e. extent of occurrence), where the convex hull is calculated using all data.
+(4) Add zeros for species that occur within a convex hull that encompasses the site, where the kernel is calculated for that year/time slice only. This scenario takes into account changes in distributional ranges through time.
+
+Tu run this tutorial on your own machine, just download the 'dplyr', 'tidyr' and 'sp' package, and set the working directory to the folder containing the "GBR_fish_data_tutorial.csv" file as below:
+
+```{r, echo = TRUE, message = FALSE}
+
+# Set up working directory
+setwd("~/Dropbox/My documents/Projects/UTAS/xxx MS Zero paper/modelling")
+
+# Load fish data
+GBR_fish_data <- read.table("GBR_fish_data_tutorial.csv", header = TRUE, quote = "'", sep = ",")
+head(GBR_fish_data)
+
+```
+
+
+We first add a "P" variable to indicate where the species was present (P = 1). 
+By construction all species recorded were present, so P = 1 by default.
+The next steps will populate where P = 0 based on different assumptions
+
+
+```{r, echo = TRUE, message = FALSE}
+GBR_fish_data$P <- 1
+```
+
+## Method 1
+### Absences at all sites where a species was not recorded
+We use the 'complete' function to populate zeros where each species was not recorded in a survey. 
+
+```{r, echo = TRUE, message = FALSE}
+GBR_fish_site_1 <- GBR_fish_data %>%  
+  complete(nesting(SiteCode, Site.name, SiteLat, SiteLong, SurveyID, Year, Pre.or.post.bleach), SPECIES_NAME, fill = list(P = 0)) 
+names(GBR_fish_site_1)[ncol(GBR_fish_site_1)] <- "P.1"
+
+# Plot presences (green) and assumed absences (red) for Ctenochaetus cyanocheilus based on Method 1
+with(GBR_fish_site_1[GBR_fish_site_1$SPECIES_NAME == "Ctenochaetus cyanocheilus" & GBR_fish_site_1$P.1 == 0,], plot(SiteLong, SiteLat, col = "red", pch = 19))
+with(GBR_fish_site_1[GBR_fish_site_1$SPECIES_NAME == "Ctenochaetus cyanocheilus" & GBR_fish_site_1$P.1 == 1,], points(SiteLong, SiteLat, col = "green", pch = 19))
+
+```
+  
+The plot above shows that wherever C. cyanocheilus was not recorded, we have assumed a true absence.
+
+## Method 2 
+### Absences are assumed at sites where the species was recorded on at least one occasion
+
+Here, we used the 'area of occupancy' to define species absences: if a species does not occur at a site where it was recorded during another survey, we assume it is absent at this site. We employ a 1-degree buffer by rounding up site coordinates to the nearest degree.
+
+```{r, echo = TRUE, message = FALSE}
+# First we establish the list of all sites where each species was recorded at least once
+SiteSpecies.ls <- GBR_fish_data %>% group_by(SiteCode, SiteLat, SiteLong, SPECIES_NAME) %>% summarise()
+
+# Then we establish the complete species list (N = 766 species)
+GBR_spp.ls <- unique(SiteSpecies.ls$SPECIES_NAME)
+
+# To apply a 1 degree buffer, we derive a second site list by rounding up the site coordinates
+SiteSpecies.ls.rd <- SiteSpecies.ls
+SiteSpecies.ls.rd$SiteLong <- round(SiteSpecies.ls.rd$SiteLong)
+SiteSpecies.ls.rd$SiteLat <- round(SiteSpecies.ls.rd$SiteLat)
+
+# We compile a list of all sites of the GBR, and one with rounded coordinates
+GBR.site.ls <- GBR.site.ls.rd <- GBR_fish_data %>% group_by(SiteCode, SiteLat, SiteLong) %>% summarise()
+GBR.site.ls.rd$SiteLong <- round(GBR.site.ls.rd$SiteLong)
+GBR.site.ls.rd$SiteLat <- round(GBR.site.ls.rd$SiteLat)
+
+# We then join both lists by the rounded coordinates. 
+# This leads to identify all sites within the vicinity of a given site where a species was recorded
+SiteSpecies.ls.rd <- SiteSpecies.ls.rd %>% left_join(GBR.site.ls.rd, by = c("SiteLong", "SiteLat"))
+
+# We then select species absences at those sites only, i.e. by subsetting absences at sites in the viicinty of where a species was recorded
+GBR_fish_site_2 <- subset(GBR_fish_site_1, paste(SiteCode, SPECIES_NAME, sep = "_") %in% with(SiteSpecies.ls.rd, paste(SiteCode.y, SPECIES_NAME, sep = "_")))
+
+names(GBR_fish_site_2)[ncol(GBR_fish_site_2)] <- "P.2"
+
+# Note the reduced dimension of this new matrix, compared to the full set of absences
+nrow(GBR_fish_site_2)
+nrow(GBR_fish_site_1)
+
+# Plot presences (green) and assumed absences (red) for Ctenochaetus cyanocheilus based on Method 2. Grey dots show all survey sites
+with(GBR.site.ls, plot(SiteLong, SiteLat, col = "grey", pch = 19))
+with(GBR_fish_site_2[GBR_fish_site_2$SPECIES_NAME == "Ctenochaetus cyanocheilus" & GBR_fish_site_2$P.2 == 0,], points(SiteLong, SiteLat, col = "red", pch = 19))
+with(GBR_fish_site_2[GBR_fish_site_2$SPECIES_NAME == "Ctenochaetus cyanocheilus" & GBR_fish_site_2$P.2 == 1,], points(SiteLong, SiteLat, col = "green", pch = 19))
+```
+  
+The plot shows that we only include absences within each species' area of occupancy, i.e. within the vicinity of sites where it was recorded at least once.
+
+
+## Method 3
+### Add zeros for species that occur within a convex hull that encompasses the site (i.e. extent of occurrence), where the kernel is calculated using all data.
+
+```{r, echo = TRUE, message = FALSE}
+# We define an empty list of species and sites to be populated during the loop
+SiteSpecies.ls.3 <- data.frame(SPECIES_NAME = as.character(NA), SiteCode = NA)
+
+# We then loop through each species to compute the convex hull encompassing all occurrences for that species
+for (i in 1:length(GBR_spp.ls)) {
+  hull.data <- subset(SiteSpecies.ls, SPECIES_NAME == GBR_spp.ls[i], select = c(SiteLong, SiteLat))
+  hull <- chull(hull.data)
+  hull <- c(hull, hull[1])
+  GBR_site.in.hull <- point.in.polygon(GBR.site.ls$SiteLong, GBR.site.ls$SiteLat, hull.data$SiteLong[hull], hull.data$SiteLat[hull])
+  # the line above assigns to each site of the GBR a '0' if it falls outside the convex hull, a '1' if it falls inside, and a '3' if it lies on the edge of the convex hull
+  SiteSpecies.ls.3 <- rbind(SiteSpecies.ls.3, data.frame(SPECIES_NAME = GBR_spp.ls[i], SiteCode = GBR.site.ls$SiteCode[GBR_site.in.hull %in% c(1,3)]))
+  # the line above lists all sites falling inside the convex hull for that species
+}
+SiteSpecies.ls.3 <- SiteSpecies.ls.3[-1,]
+
+head(SiteSpecies.ls.3)
+
+# We then select species absences at those sites only, by subsetting the full list defined in Method 1
+GBR_fish_site_3 <- subset(GBR_fish_site_1, paste(SiteCode, SPECIES_NAME, sep = "_") %in% with(SiteSpecies.ls.3, paste(SiteCode, SPECIES_NAME, sep = "_")))
+names(GBR_fish_site_3)[ncol(GBR_fish_site_3)] <- "P.3"
+
+
+# Check convex hulls and inside/outside sites for Ctenochaetus cyanocheilus
+hull.data <- subset(SiteSpecies.ls, SPECIES_NAME == "Ctenochaetus cyanocheilus", select = c(SiteLong, SiteLat))
+hull <- chull(hull.data)
+hull <- c(hull, hull[1])
+GBR_site.in.hull <- point.in.polygon(GBR.site.ls$SiteLong, GBR.site.ls$SiteLat, hull.data$SiteLong[hull], hull.data$SiteLat[hull])
+
+plot(hull.data)
+lines(hull.data[hull,])
+polygon(hull.data[hull,], col = "transparent")
+points(GBR.site.ls$SiteLong, GBR.site.ls$SiteLat, col = "grey", pch = 19)
+points(GBR.site.ls$SiteLong[GBR_site.in.hull %in% c(1,3)], GBR.site.ls$SiteLat[GBR_site.in.hull %in% c(1,3)], col = "red", pch = 19)
+points(hull.data, pch = 19, col = "green")
+
+```
+  
+The green dots show where the species was recorded (presences). The polygon delinates the comvex hull encompassing all of these points. Grey dots show sites outside the convex hull, where absences will not be accounted for (i.e. considered as 'NA'). Red dots show sites inside the convex hull where the species was not recorded, and thus where absences will be assumed.
+
+
+## Method 4
+### Add zeros for species that occur within a convex hull that encompasses the site, where the kernel is calculated for that year/time slice only. 
+
+This scenario takes into account changes in distributional ranges through time. It is very similar to the previous method, however here we select absences within each time slice (before/after bleaching) separately.
+
+```{r, echo = TRUE, message = FALSE}
+SiteSpecies.ls.pre.post <- GBR_fish_data %>% group_by(SiteCode, SiteLat, SiteLong, Pre.or.post.bleach, SPECIES_NAME) %>% summarise()
+
+SiteSpecies.ls.4 <- data.frame(SPECIES_NAME = as.character(NA), SiteCode = NA, Pre.or.post.bleach = NA)
+
+for (i in 1:length(GBR_spp.ls)) {
+  pre.hull.data <- subset(SiteSpecies.ls.pre.post, SPECIES_NAME == GBR_spp.ls[i] & Pre.or.post.bleach == "Pre", select = c(SiteLong, SiteLat))
+  pre.hull <- chull(pre.hull.data)
+  pre.hull <- c(pre.hull, pre.hull[1])
+  GBR_site.in.pre.hull <- point.in.polygon(GBR.site.ls$SiteLong, GBR.site.ls$SiteLat, pre.hull.data$SiteLong[pre.hull], pre.hull.data$SiteLat[pre.hull])
+  
+  if(length(GBR.site.ls$SiteCode[GBR_site.in.pre.hull %in% c(1,3)]) > 0) {
+    SiteSpecies.ls.4 <- rbind(SiteSpecies.ls.4, data.frame(SPECIES_NAME = GBR_spp.ls[i], SiteCode = GBR.site.ls$SiteCode[GBR_site.in.pre.hull %in% c(1,3)], Pre.or.post.bleach = "Pre"))
+  }
+  
+  post.hull.data <- subset(SiteSpecies.ls.pre.post, SPECIES_NAME == GBR_spp.ls[i] & Pre.or.post.bleach == "Post", select = c(SiteLong, SiteLat))
+  post.hull <- chull(post.hull.data)
+  post.hull <- c(post.hull, post.hull[1])
+  GBR_site.in.post.hull <- point.in.polygon(GBR.site.ls$SiteLong, GBR.site.ls$SiteLat, post.hull.data$SiteLong[post.hull], post.hull.data$SiteLat[post.hull])
+  
+  if(length(GBR.site.ls$SiteCode[GBR_site.in.post.hull %in% c(1,3)]) > 0) {
+    SiteSpecies.ls.4 <- rbind(SiteSpecies.ls.4, data.frame(SPECIES_NAME = GBR_spp.ls[i], SiteCode = GBR.site.ls$SiteCode[GBR_site.in.post.hull %in% c(1,3)], Pre.or.post.bleach = "Post"))
+  }
+}
+
+SiteSpecies.ls.4 <- SiteSpecies.ls.4[-1,]
+
+# We then select species absences at those sites only, by subsetting the full list defined in Method 1
+GBR_fish_site_4 <- subset(GBR_fish_site_1, paste(SiteCode, Pre.or.post.bleach, SPECIES_NAME, sep = "_") %in% with(SiteSpecies.ls.4, paste(SiteCode, Pre.or.post.bleach, SPECIES_NAME, sep = "_")))
+names(GBR_fish_site_4)[ncol(GBR_fish_site_4)] <- "P.4"
+
+# Check pre vs post heatwave convex hulls and inside/outside sites for Ctenochaetus cyanocheilus
+pre.hull.data <- subset(SiteSpecies.ls.pre.post, SPECIES_NAME == "Ctenochaetus cyanocheilus" & Pre.or.post.bleach == "Pre", select = c(SiteLong, SiteLat))
+pre.hull <- chull(pre.hull.data)
+pre.hull <- c(pre.hull, pre.hull[1])
+GBR_site.in.pre.hull <- point.in.polygon(GBR.site.ls$SiteLong, GBR.site.ls$SiteLat, pre.hull.data$SiteLong[pre.hull], pre.hull.data$SiteLat[pre.hull])
+
+post.hull.data <- subset(SiteSpecies.ls.pre.post, SPECIES_NAME == "Ctenochaetus cyanocheilus" & Pre.or.post.bleach == "Post", select = c(SiteLong, SiteLat))
+post.hull <- chull(post.hull.data)
+post.hull <- c(post.hull, post.hull[1])
+GBR_site.in.post.hull <- point.in.polygon(GBR.site.ls$SiteLong, GBR.site.ls$SiteLat, post.hull.data$SiteLong[post.hull], post.hull.data$SiteLat[post.hull])
+
+par(mfcol = c(1,2))
+plot(pre.hull.data, xlim = c(143,156), ylim = c(-25,-10))
+lines(pre.hull.data[pre.hull,])
+polygon(pre.hull.data[pre.hull,], col = "transparent")
+points(GBR.site.ls$SiteLong, GBR.site.ls$SiteLat, col = "blue", pch = 19)
+points(GBR.site.ls$SiteLong[GBR_site.in.pre.hull %in% c(1,3)], GBR.site.ls$SiteLat[GBR_site.in.pre.hull %in% c(1,3)], col = "red", pch = 19)
+points(pre.hull.data, pch = 19, col = "green")
+
+plot(post.hull.data, xlim = c(143,156), ylim = c(-25,-10))
+lines(post.hull.data[post.hull,])
+polygon(post.hull.data[post.hull,], col = "transparent")
+points(GBR.site.ls$SiteLong, GBR.site.ls$SiteLat, col = "blue", pch = 19)
+points(GBR.site.ls$SiteLong[GBR_site.in.post.hull %in% c(1,3)], GBR.site.ls$SiteLat[GBR_site.in.post.hull %in% c(1,3)], col = "red", pch = 19)
+points(post.hull.data, pch = 19, col = "green")
+```
+  
+  This now shows different sets of assumed absences based on changes in species distributions following the 2016 heatwave.
+  
+Now we will build a single table with 4 occurrence estimates, one for each method (P.1 to P.4). 
+We can see that where absences are included varies between methods:
+
+```{r, echo = TRUE, message = FALSE}
+GBR_fish_site_all <- GBR_fish_site_1 %>% 
+  left_join(GBR_fish_site_2, by = c("SiteCode","Site.name","SiteLat","SiteLong","SPECIES_NAME","Pre.or.post.bleach", "SurveyID", "Year")) %>%
+  left_join(GBR_fish_site_3, by = c("SiteCode","Site.name","SiteLat","SiteLong","SPECIES_NAME","Pre.or.post.bleach", "SurveyID", "Year")) %>%
+  left_join(GBR_fish_site_4, by = c("SiteCode","Site.name","SiteLat","SiteLong","SPECIES_NAME","Pre.or.post.bleach", "SurveyID", "Year")) %>%
+  data.frame()
+
+GBR_fish_site_all[1:10,] 
+```
